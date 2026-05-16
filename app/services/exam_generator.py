@@ -404,31 +404,116 @@ def _normalize_fib_answers(question: dict) -> None:
     question.pop("blanks", None)
 
 
-def _synthesize_mtf_text(question: dict) -> None:
-    if str(question.get("text") or "").strip():
-        return
+def _mtf_left_items(match_pairs: Any) -> list[str]:
+    if not isinstance(match_pairs, list):
+        return []
+    items: list[str] = []
+    for p in match_pairs:
+        if not isinstance(p, dict):
+            continue
+        lt = str(p.get("leftText") or "").strip()
+        if lt and lt not in items:
+            items.append(lt)
+    return items
+
+
+def _mtf_pair_keys(match_pairs: Any) -> list[str]:
+    if not isinstance(match_pairs, list):
+        return []
+    keys: list[str] = []
+    for p in match_pairs:
+        if not isinstance(p, dict):
+            continue
+        pk = str(p.get("pairKey") or "").strip()
+        if pk and pk not in keys:
+            keys.append(pk)
+    return keys
+
+
+_MTF_SECTION_INSTRUCTION = "Match each item in Column A with the correct option in Column B."
+
+
+def _is_generic_mtf_stem(text: str) -> bool:
+    lower = text.strip().lower()
+    if not lower:
+        return True
+    if lower in {"match the following.", "match the following", "match the following:"}:
+        return True
+    if lower.startswith("match each of these with the correct option"):
+        return True
+    if lower.startswith("match each item in column a"):
+        return True
+    if not lower.startswith("match the following") and not lower.startswith("match each"):
+        return False
+    generic_tails = (
+        " to their importance",
+        " to their descriptions",
+        " to their categories",
+        " to the correct",
+        " with the correct",
+        " to the right",
+        " with their",
+        " to their",
+    )
+    return any(tail in lower for tail in generic_tails) or len(lower) < 120
+
+
+def _build_mtf_compact_text(match_pairs: Any) -> str:
+    """Item-only label for follow-up MTF questions in the same section (no repeated match instruction)."""
+    left_items = _mtf_left_items(match_pairs)
+    if not left_items:
+        return "See Column A."
+    return ", ".join(left_items[:8])
+
+
+def _normalize_mtf_text(question: dict) -> None:
+    """Per-question text is item labels only; section `instruction` is set when grouping."""
     mp = question.get("matchPairs")
-    if isinstance(mp, list) and mp:
-        snippets: list[str] = []
-        for p in mp[:4]:
-            if not isinstance(p, dict):
-                continue
-            lt = str(p.get("leftText") or "").strip()
-            pk = str(p.get("pairKey") or "").strip()
-            if lt and pk:
-                snippets.append(f"{lt} → {pk}")
-            elif lt or pk:
-                snippets.append(lt or pk)
-        if snippets:
-            question["text"] = "Match the following: " + "; ".join(snippets)
-            return
-    question["text"] = "Match the following."
+    text = str(question.get("text") or "").strip()
+    compact = _build_mtf_compact_text(mp) or "See Column A."
+    if not text or _is_generic_mtf_stem(text):
+        question["text"] = compact
+        return
+    if text.lower().startswith("match "):
+        question["text"] = compact
+
+
+def _coerce_des_model_answer_value(value: Any) -> str:
+    if isinstance(value, list):
+        parts = [str(x).strip() for x in value if str(x).strip()]
+        if not parts:
+            return ""
+        if all(p.startswith("•") for p in parts):
+            return "\n".join(parts)
+        return "\n".join(f"• {p}" for p in parts)
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _normalize_des_for_response(question: dict) -> None:
     ma = question.get("modelAnswer")
+    if isinstance(ma, list):
+        question["modelAnswer"] = _coerce_des_model_answer_value(ma)
+        ma = question["modelAnswer"]
+    elif ma is not None and not isinstance(ma, str):
+        question["modelAnswer"] = _coerce_des_model_answer_value(ma)
+        ma = question["modelAnswer"]
     if ma is None or not str(ma).strip():
-        for key in ("answer", "suggestedAnswer", "model_answer", "exemplarAnswer", "markingNotes"):
+        for key in (
+            "answer",
+            "suggestedAnswer",
+            "model_answer",
+            "exemplarAnswer",
+            "markingNotes",
+            "markingScheme",
+            "expectedAnswer",
+            "sampleAnswer",
+            "solution",
+            "markingCriteria",
+            "marking_notes",
+            "expectedResponse",
+        ):
             v = question.get(key)
             if isinstance(v, str) and v.strip():
                 question["modelAnswer"] = v.strip()
@@ -436,21 +521,55 @@ def _normalize_des_for_response(question: dict) -> None:
             if isinstance(v, list) and v:
                 question["modelAnswer"] = "\n".join(str(x).strip() for x in v if str(x).strip()).strip()
                 break
-    if question.get("modelAnswer") is None:
-        question["modelAnswer"] = ""
     extras: list[str] = []
-    kp = question.get("keyPoints")
-    if isinstance(kp, list):
-        extras.extend(str(x).strip() for x in kp if isinstance(x, str) and x.strip())
-    rub = question.get("rubric")
-    if isinstance(rub, list):
-        extras.extend(str(x).strip() for x in rub if str(x).strip())
+    for key in ("keyPoints", "rubric", "markingPoints", "criteria"):
+        raw = question.get(key)
+        if isinstance(raw, list):
+            extras.extend(str(x).strip() for x in raw if str(x).strip())
+        elif isinstance(raw, str) and raw.strip():
+            extras.append(raw.strip())
     if extras:
         bullets = "\n".join(f"• {x}" for x in extras)
         ma = str(question.get("modelAnswer") or "").strip()
         question["modelAnswer"] = f"{ma}\n\n{bullets}".strip() if ma else bullets
-    for k in ("keyPoints", "rubric"):
+    for k in (
+        "keyPoints",
+        "rubric",
+        "markingPoints",
+        "criteria",
+        "answer",
+        "suggestedAnswer",
+        "model_answer",
+        "exemplarAnswer",
+        "markingNotes",
+        "markingScheme",
+        "expectedAnswer",
+        "sampleAnswer",
+        "solution",
+        "markingCriteria",
+        "marking_notes",
+        "expectedResponse",
+    ):
         question.pop(k, None)
+    if not str(question.get("modelAnswer") or "").strip():
+        question["modelAnswer"] = ""
+
+
+def _des_missing_model_answers(sections: list[Any]) -> list[str]:
+    """Return questionCodes of DES items with empty modelAnswer after repair."""
+    missing: list[str] = []
+    for section in sections:
+        if not isinstance(section, dict) or section.get("type") != "DES":
+            continue
+        nested = section.get("questions")
+        if not isinstance(nested, list):
+            continue
+        for q in nested:
+            if not isinstance(q, dict):
+                continue
+            if not str(q.get("modelAnswer") or "").strip():
+                missing.append(str(q.get("questionCode") or "?"))
+    return missing
 
 
 def _normalize_difficulty(value: Any, fallback: str) -> str:
@@ -458,33 +577,115 @@ def _normalize_difficulty(value: Any, fallback: str) -> str:
     return txt if txt in {"VERY_EASY", "EASY", "MEDIUM", "HARD", "VERY_HARD"} else fallback
 
 
-def _order_questions_for_paper_layout(questions: list[dict], payload: ExamPayload) -> list[dict]:
-    """Group by type block (payload questionTypes order) and renumber displayOrder / questionCode."""
-    type_order: list[str] = []
-    for spec in payload.questionTypes:
-        t = spec.type.value
-        if t not in type_order:
-            type_order.append(t)
+def _flatten_raw_questions(raw_questions: list[Any]) -> list[dict]:
+    """Grouped sections or legacy flat list from the LLM."""
+    flat: list[dict] = []
+    for item in raw_questions:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("questions")
+        if isinstance(nested, list) and item.get("type"):
+            section_type = str(item.get("type") or "")
+            section_diff = item.get("difficulty") or item.get("difficultyLevel")
+            for q in nested:
+                if not isinstance(q, dict):
+                    continue
+                qq = dict(q)
+                qq.setdefault("type", section_type)
+                if section_diff is not None:
+                    qq.setdefault("difficulty", section_diff)
+                flat.append(qq)
+        else:
+            flat.append(dict(item))
+    return flat
 
-    buckets: dict[str, list[dict]] = {t: [] for t in type_order}
+
+def _strip_question_section_fields(question: dict) -> dict:
+    return {k: v for k, v in question.items() if k not in ("type", "difficulty", "difficultyLevel")}
+
+
+def _group_questions_for_paper_layout(questions: list[dict], payload: ExamPayload) -> list[dict]:
+    """Club type + difficulty into sections; renumber displayOrder / questionCode."""
+    section_order: list[tuple[str, str]] = []
+    for spec in payload.questionTypes:
+        key = (spec.type.value, spec.difficultyLevel.value)
+        if key not in section_order:
+            section_order.append(key)
+
+    buckets: dict[tuple[str, str], list[dict]] = {k: [] for k in section_order}
     trailing: list[dict] = []
     for q in questions:
-        t = str(q.get("type") or "")
-        if t in buckets:
-            buckets[t].append(q)
+        key = (
+            str(q.get("type") or ""),
+            str(q.get("difficulty") or q.get("difficultyLevel") or ""),
+        )
+        if key in buckets:
+            buckets[key].append(q)
         else:
             trailing.append(q)
 
-    ordered: list[dict] = []
-    for t in type_order:
-        block = sorted(buckets[t], key=lambda x: int(x.get("displayOrder") or 0))
-        ordered.extend(block)
-    ordered.extend(trailing)
+    sections: list[dict] = []
+    global_idx = 0
+    mtf_instruction_shown = False
 
-    for idx, q in enumerate(ordered, start=1):
-        q["displayOrder"] = idx
-        q["questionCode"] = f"Q{idx}"
-    return ordered
+    def _append_section(q_type: str, difficulty: str, block: list[dict]) -> None:
+        nonlocal global_idx, mtf_instruction_shown
+        if not block:
+            return
+        inner: list[dict] = []
+        for q in sorted(block, key=lambda x: int(x.get("displayOrder") or 0)):
+            global_idx += 1
+            item = _strip_question_section_fields(q)
+            item["displayOrder"] = global_idx
+            item["questionCode"] = f"Q{global_idx}"
+            inner.append(item)
+        if q_type == "MTF":
+            for item in inner:
+                item["text"] = _build_mtf_compact_text(item.get("matchPairs")) or "See Column A."
+            section_dict: dict = {
+                "type": q_type,
+                "difficulty": difficulty,
+                "questions": inner,
+            }
+            if not mtf_instruction_shown:
+                section_dict["instruction"] = _MTF_SECTION_INSTRUCTION
+                mtf_instruction_shown = True
+            sections.append(section_dict)
+        else:
+            sections.append({"type": q_type, "difficulty": difficulty, "questions": inner})
+
+    for q_type, difficulty in section_order:
+        _append_section(q_type, difficulty, buckets[(q_type, difficulty)])
+
+    trailing_keys: list[tuple[str, str]] = []
+    for q in trailing:
+        key = (
+            str(q.get("type") or ""),
+            str(q.get("difficulty") or q.get("difficultyLevel") or ""),
+        )
+        if key not in trailing_keys:
+            trailing_keys.append(key)
+    for q_type, difficulty in trailing_keys:
+        block = [
+            q
+            for q in trailing
+            if str(q.get("type") or "") == q_type
+            and str(q.get("difficulty") or q.get("difficultyLevel") or "") == difficulty
+        ]
+        _append_section(q_type, difficulty, block)
+
+    return sections
+
+
+def _count_questions_in_sections(sections: list[Any]) -> int:
+    total = 0
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        nested = section.get("questions")
+        if isinstance(nested, list):
+            total += len(nested)
+    return total
 
 
 def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matches: list[dict]) -> dict:
@@ -492,9 +693,10 @@ def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matche
     raw_questions = repaired.get("questions")
     if not isinstance(raw_questions, list):
         raw_questions = []
+    flat_questions = _flatten_raw_questions(raw_questions)
     default_difficulty = payload.questionTypes[0].difficultyLevel.value if payload.questionTypes else "EASY"
     normalized_questions: list[dict] = []
-    for idx, item in enumerate(raw_questions, start=1):
+    for idx, item in enumerate(flat_questions, start=1):
         if not isinstance(item, dict):
             continue
         q = dict(item)
@@ -514,7 +716,7 @@ def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matche
         if q.get("type") == "MTF":
             _normalize_match_pairs(q)
             _ensure_mtf_match_pairs(q)
-            _synthesize_mtf_text(q)
+            _normalize_mtf_text(q)
         if q.get("type") == "FIB":
             _normalize_fib_answers(q)
         if q.get("type") == "DES":
@@ -537,7 +739,7 @@ def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matche
             requested_total,
         )
 
-    repaired["questions"] = _order_questions_for_paper_layout(capped_questions, payload)
+    repaired["questions"] = _group_questions_for_paper_layout(capped_questions, payload)
     repaired.pop("sources", None)
     base = str(payload.description or "").strip()
     summ = str(repaired.get("summary") or repaired.get("examSummary") or "").strip()
@@ -872,13 +1074,33 @@ def generate_exam(payload: ExamPayload, openai_client: OpenAI, pinecone_client: 
             data["class"] = class_str
             data["subject"] = subject_str
             questions_out = data.get("questions") or []
-            data["totalQuestions"] = len(questions_out)
+            data["totalQuestions"] = _count_questions_in_sections(questions_out)
             data["publication"] = str(payload.publication)
             data["chapters"] = list(payload.chapters)
+            missing_des = _des_missing_model_answers(questions_out)
+            if missing_des:
+                logger.warning(
+                    "DES missing modelAnswer attempt=%d codes=%s",
+                    attempt + 1,
+                    missing_des,
+                )
+                if attempt == 1:
+                    raise UpstreamError(
+                        "Exam has descriptive questions without model answers. Please try again.",
+                        {"questionCodes": missing_des},
+                        code="missing_des_model_answer",
+                    )
+                prompt += (
+                    "\n\nPrevious output omitted modelAnswer on DES question(s): "
+                    + ", ".join(missing_des)
+                    + ". Every DES MUST include a non-empty modelAnswer (3–6 marking points from the chapter). "
+                    "Return strictly valid JSON."
+                )
+                continue
             logger.info(
                 "Exam generation success attempt=%d questions=%d requested_max=%d",
                 attempt + 1,
-                len(questions_out),
+                data["totalQuestions"],
                 _requested_question_total(payload),
             )
             return ExamResponse.model_validate(data)
@@ -890,7 +1112,10 @@ def generate_exam(payload: ExamPayload, openai_client: OpenAI, pinecone_client: 
                     {"reason": str(exc)},
                     code="invalid_exam_format",
                 ) from exc
-            prompt += "\n\nPrevious output failed schema validation. Return strictly valid JSON."
+            prompt += (
+                "\n\nPrevious output failed schema validation. Return strictly valid JSON. "
+                "Every DES question MUST have a non-empty modelAnswer field."
+            )
         except Exception as exc:  # pragma: no cover - network path
             mapped = _map_openai_error(exc)
             if mapped.status_code in (429, 503):

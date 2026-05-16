@@ -117,10 +117,8 @@ class MatchPair(BaseModel):
     displayOrder: int
 
 
-class MCQQuestion(BaseModel):
-    type: Literal["MCQ"] = "MCQ"
+class MCQQuestionItem(BaseModel):
     questionCode: str
-    difficulty: Difficulty
     text: str
     displayOrder: int
     options: list[QuestionOption] = Field(min_length=1)
@@ -130,10 +128,8 @@ class MCQQuestion(BaseModel):
     )
 
 
-class TOFQuestion(BaseModel):
-    type: Literal["TOF"] = "TOF"
+class TOFQuestionItem(BaseModel):
     questionCode: str
-    difficulty: Difficulty
     text: str
     displayOrder: int
     answer: bool = Field(
@@ -142,10 +138,8 @@ class TOFQuestion(BaseModel):
     )
 
 
-class FIBQuestion(BaseModel):
-    type: Literal["FIB"] = "FIB"
+class FIBQuestionItem(BaseModel):
     questionCode: str
-    difficulty: Difficulty
     text: str
     displayOrder: int
     answers: list[str] = Field(
@@ -154,10 +148,8 @@ class FIBQuestion(BaseModel):
     )
 
 
-class MTFQuestion(BaseModel):
-    type: Literal["MTF"] = "MTF"
+class MTFQuestionItem(BaseModel):
     questionCode: str
-    difficulty: Difficulty
     text: str
     displayOrder: int
     matchPairs: list[MatchPair] = Field(
@@ -166,15 +158,13 @@ class MTFQuestion(BaseModel):
     )
 
 
-class DESQuestion(BaseModel):
-    type: Literal["DES"] = "DES"
+class DESQuestionItem(BaseModel):
     questionCode: str
-    difficulty: Difficulty
     text: str
     displayOrder: int
     modelAnswer: str = Field(
-        default="",
-        description="Marking reference / model answer (may include rubric bullets merged from the model).",
+        min_length=1,
+        description="Required marking reference / model answer (non-empty; may include rubric bullets merged from the model).",
     )
 
     @model_validator(mode="before")
@@ -192,8 +182,42 @@ class DESQuestion(BaseModel):
         return d
 
 
-Question = Annotated[
-    Union[MCQQuestion, TOFQuestion, FIBQuestion, MTFQuestion, DESQuestion],
+class MCQQuestionSection(BaseModel):
+    type: Literal["MCQ"] = "MCQ"
+    difficulty: Difficulty
+    questions: list[MCQQuestionItem] = Field(min_length=1)
+
+
+class TOFQuestionSection(BaseModel):
+    type: Literal["TOF"] = "TOF"
+    difficulty: Difficulty
+    questions: list[TOFQuestionItem] = Field(min_length=1)
+
+
+class FIBQuestionSection(BaseModel):
+    type: Literal["FIB"] = "FIB"
+    difficulty: Difficulty
+    questions: list[FIBQuestionItem] = Field(min_length=1)
+
+
+class MTFQuestionSection(BaseModel):
+    type: Literal["MTF"] = "MTF"
+    difficulty: Difficulty
+    instruction: str | None = Field(
+        default=None,
+        description="Match-the-following line shown only on the first MTF section in the exam; omit on later MTF sections.",
+    )
+    questions: list[MTFQuestionItem] = Field(min_length=1)
+
+
+class DESQuestionSection(BaseModel):
+    type: Literal["DES"] = "DES"
+    difficulty: Difficulty
+    questions: list[DESQuestionItem] = Field(min_length=1)
+
+
+QuestionSection = Annotated[
+    Union[MCQQuestionSection, TOFQuestionSection, FIBQuestionSection, MTFQuestionSection, DESQuestionSection],
     Field(discriminator="type"),
 ]
 
@@ -220,4 +244,4 @@ class ExamResponse(BaseModel):
         description="Merged prose: exam summary (model), exam analytics (model), then teacher instructions from the request (last).",
     )
     totalQuestions: int
-    questions: list[Question]
+    questions: list[QuestionSection]

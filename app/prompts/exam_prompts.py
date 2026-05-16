@@ -36,16 +36,15 @@ Rules:
 - Ensure final JSON matches schema exactly.
 - Treat `description` as teacher guidance (focus/topics/style/constraints), not as chapter content.
 - If the payload lists multiple `chapters`, draw questions fairly across all of them using the provided context chunks.
-- Paper layout — output `questions` like a printed exam (one section per question type, not one heading per question):
-  * Group every question of the same `type` into one contiguous block (e.g. all 5 MCQs together, then all TOF, then FIB, MTF, DES).
-  * Order type blocks exactly as `questionTypes` appears in the payload (use the first-seen order of each `type`; never interleave types).
-  * Within each block, list questions back-to-back; assign `displayOrder` 1, 2, 3, … through the full paper and matching `questionCode` Q1, Q2, Q3, …
-  * Do not put section titles inside `text`; the client shows one heading per type (e.g. one "MCQ" heading, then those MCQ lines).
-- For each question include: questionCode (Q1..), type, difficulty, text, displayOrder.
+- Paper layout — `questions` must be sections that club `type` + `difficulty` (MCQ, TOF, FIB, MTF, DES):
+  * One section per (`type`, `difficulty`) from `questionTypes`, ordered as in the payload.
+  * Shape: `{{"type": "MCQ", "difficulty": "VERY_EASY", "questions": [ ... ]}}` — `type` and `difficulty` only on the section.
+  * Nested items: questionCode, text, displayOrder (1..N across the paper), plus type fields (options/correctOption, answer, answers, matchPairs, modelAnswer).
 - MCQ options must be objects with: optionLabel, text, displayOrder. You MUST also set `correctOption` to the optionLabel of the one correct choice (e.g. `"B"`).
 - TOF: set boolean `answer` (true if the statement is correct, false if incorrect). Put the statement text in `text` (or legacy `statement` which is copied to `text`).
 - FIB: include `text` (stem with _____ or clear blanks) and `answers` only; do not include a `blanks` field in output.
-- MTF: each MTF question must include **at least two** objects in `matchPairs` (leftText, pairKey, displayOrder each). Never fewer than two pairs per MTF item. Always set a non-empty `text` (short instruction like “Match the following”); never leave `text` as an empty string.
-- DES: put ONLY the learner-facing prompt in `text`. Put marking content in `modelAnswer` only (if the model emits rubric bullets in `keyPoints` or `rubric`, the server merges them into `modelAnswer`; clients do not see `keyPoints`).
+- MTF: each MTF question must include **at least two** objects in `matchPairs` (leftText, pairKey, displayOrder each). Never fewer than two pairs per MTF item.
+  * Put `instruction` (e.g. “Match each item in Column A with the correct option in Column B.”) **only on the first MTF section** in the whole exam; omit `instruction` on all later MTF sections. Every nested MTF question’s `text` is **only** a short `leftText` list (e.g. “Throwing, Catching”).
+- DES: put ONLY the learner-facing prompt in `text`. **Every DES item MUST have a non-empty `modelAnswer`** (marking reference for teachers): 3–6 bullet points or a short paragraph with expected points, aligned to the chapter. Never leave `modelAnswer` as `""`. Do not put the model answer in `text`. If you use `keyPoints` or `rubric`, the server merges them into `modelAnswer`; clients only see `modelAnswer`.
 - At the root, include strings `summary` and `analysis` for the model only; the API merges them into `description` in this order: (1) exam summary, (2) exam analytics, (3) the request `description` / teacher instructions last. Clients only see the single `description` field.
 """
