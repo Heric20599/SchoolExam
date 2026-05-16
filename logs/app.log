@@ -52,3 +52,19 @@
 2026-05-09 15:32:19,282 INFO [app.services.exam_generator] Calling OpenAI for exam generation attempt=1
 2026-05-09 15:33:44,535 INFO [httpx] HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
 2026-05-09 15:33:44,739 INFO [app.services.exam_generator] Exam generation success attempt=1 questions=20
+2026-05-16 16:47:36,626 INFO [pinecone.client.indexes] Listing indexes
+2026-05-16 16:47:38,121 INFO [httpx] HTTP Request: GET https://api.pinecone.io/indexes "HTTP/1.1 200 OK"
+2026-05-16 16:47:38,129 INFO [pinecone.client.indexes] Describing index 'schoolknowledgebase'
+2026-05-16 16:47:38,449 INFO [httpx] HTTP Request: GET https://api.pinecone.io/indexes/schoolknowledgebase "HTTP/1.1 200 OK"
+2026-05-16 16:58:54,322 INFO [app.services.exam_generator] Exam request received: class=1 subject=1 publication=1 chapters=[1] question_types=5
+2026-05-16 16:59:01,843 INFO [httpx] HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+2026-05-16 16:59:02,278 INFO [pinecone.index] Index client created for host https://schoolknowledgebase-4zqljkv.svc.aped-4627-b74a.pinecone.io
+2026-05-16 16:59:02,278 INFO [pinecone.index] Querying index with top_k=1
+2026-05-16 16:59:06,058 INFO [httpx] HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+2026-05-16 16:59:06,372 INFO [pinecone.index] Index client created for host https://schoolknowledgebase-4zqljkv.svc.aped-4627-b74a.pinecone.io
+2026-05-16 16:59:06,372 INFO [pinecone.index] Querying index with top_k=8
+2026-05-16 16:59:08,337 INFO [app.services.exam_generator] Resolved chapters=1 context_matches=8
+2026-05-16 16:59:08,344 INFO [app.services.exam_generator] Schema strictness check: non_strict_objects=0
+2026-05-16 16:59:08,345 INFO [app.services.exam_generator] Calling OpenAI for exam generation attempt=1
+2026-05-16 16:59:29,962 INFO [httpx] HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-05-16 16:59:29,962 INFO [app.services.exam_generator] Exam generation success attempt=1 questions=10 requested_max=10

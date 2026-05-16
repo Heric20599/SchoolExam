@@ -18,5 +18,12 @@ class ConflictError(AppError):
 
 
 class UpstreamError(AppError):
-    def __init__(self, message: str, details: dict | None = None):
-        super().__init__("upstream_error", message, details=details, status_code=502)
+    def __init__(
+        self,
+        message: str,
+        details: dict | None = None,
+        *,
+        status_code: int = 502,
+        code: str = "upstream_error",
+    ):
+        super().__init__(code, message, details=details, status_code=status_code)

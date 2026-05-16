@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
@@ -53,6 +54,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="School Knowledge Base RAG API", lifespan=lifespan)
 logger = logging.getLogger(__name__)
+
+_cors_settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+logger.info("CORS allowed origins: %s", _cors_settings.cors_origins)
 
 
 @app.get("/health")

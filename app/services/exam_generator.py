@@ -6,13 +6,19 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, OpenAI, RateLimitError
 from pinecone import Pinecone
 from pydantic import ValidationError
 
 from app.errors import ConflictError, UpstreamError
 from app.prompts.exam_prompts import build_exam_prompt
-from app.schemas.exam import ExamPayload, ExamResponse, MTF_MAX_MATCH_PAIRS
+from app.schemas.exam import (
+    EXAM_MAX_TOTAL_QUESTIONS,
+    ExamPayload,
+    ExamResponse,
+    MTF_MAX_MATCH_PAIRS,
+    MTF_MIN_MATCH_PAIRS,
+)
 from app.services.embeddings import embed_texts
 from app.services.pinecone_store import (
     metadata_class_string,
@@ -238,17 +244,119 @@ def _normalize_match_pairs(question: dict) -> None:
             for i in range(size)
         ]
         return
-    question["matchPairs"] = [{"leftText": "", "pairKey": "", "displayOrder": 1}]
+    question["matchPairs"] = [
+        {"leftText": "", "pairKey": "", "displayOrder": 1},
+        {"leftText": "", "pairKey": "", "displayOrder": 2},
+    ]
 
 
-def _trim_mtf_pairs(question: dict, max_pairs: int = MTF_MAX_MATCH_PAIRS) -> None:
+def _ensure_mtf_match_pairs(
+    question: dict,
+    min_pairs: int = MTF_MIN_MATCH_PAIRS,
+    max_pairs: int = MTF_MAX_MATCH_PAIRS,
+) -> None:
     mp = question.get("matchPairs")
-    if not isinstance(mp, list) or len(mp) <= max_pairs:
-        return
-    question["matchPairs"] = mp[:max_pairs]
-    for i, p in enumerate(question["matchPairs"], start=1):
+    if not isinstance(mp, list):
+        mp = []
+    if len(mp) > max_pairs:
+        mp = mp[:max_pairs]
+    while len(mp) < min_pairs:
+        mp.append({"leftText": "", "pairKey": "", "displayOrder": len(mp) + 1})
+    for i, p in enumerate(mp, start=1):
         if isinstance(p, dict):
             p["displayOrder"] = i
+    question["matchPairs"] = mp
+
+
+def _map_openai_error(exc: Exception) -> UpstreamError:
+    message_lower = str(exc).lower()
+    if isinstance(exc, RateLimitError):
+        return UpstreamError(
+            "AI request limit reached. Please wait a moment and try again.",
+            {"reason": "rate_limit"},
+            status_code=429,
+            code="rate_limit_exceeded",
+        )
+    if isinstance(exc, APIConnectionError):
+        return UpstreamError(
+            "Could not reach the AI service. Please try again shortly.",
+            {"reason": "connection_error"},
+            status_code=503,
+            code="service_unavailable",
+        )
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(exc, APIStatusError) and status_code == 429:
+        return UpstreamError(
+            "AI request limit reached. Please wait a moment and try again.",
+            {"reason": "rate_limit"},
+            status_code=429,
+            code="rate_limit_exceeded",
+        )
+    if isinstance(exc, APIError):
+        code = str(getattr(exc, "code", "") or "")
+        if code in {"insufficient_quota", "billing_hard_limit_reached"} or "quota" in message_lower:
+            return UpstreamError(
+                "AI service quota exceeded. Please try again later or contact support.",
+                {"reason": "quota_exceeded", "provider_code": code or None},
+                status_code=429,
+                code="quota_exceeded",
+            )
+        if status_code == 429 or "rate limit" in message_lower:
+            return UpstreamError(
+                "AI request limit reached. Please wait a moment and try again.",
+                {"reason": "rate_limit"},
+                status_code=429,
+                code="rate_limit_exceeded",
+            )
+    return UpstreamError("Exam generation failed", {"reason": str(exc)})
+
+
+def _requested_question_total(payload: ExamPayload) -> int:
+    total = sum(spec.numberOfQuestions for spec in payload.questionTypes)
+    return min(total, EXAM_MAX_TOTAL_QUESTIONS)
+
+
+def _cap_questions_to_payload(questions: list[dict], payload: ExamPayload) -> list[dict]:
+    """Keep at most the requested count per questionTypes row; drop extras, never pad."""
+    remaining = list(questions)
+    capped: list[dict] = []
+
+    for spec in payload.questionTypes:
+        q_type = spec.type.value
+        difficulty = spec.difficultyLevel.value
+        limit = spec.numberOfQuestions
+        if limit <= 0:
+            continue
+
+        picked: list[dict] = []
+        still: list[dict] = []
+        for q in remaining:
+            if len(picked) >= limit:
+                still.append(q)
+                continue
+            if q.get("type") == q_type and q.get("difficulty") == difficulty:
+                picked.append(q)
+            else:
+                still.append(q)
+
+        if len(picked) < limit:
+            retry: list[dict] = []
+            for q in still:
+                if len(picked) >= limit:
+                    retry.append(q)
+                elif q.get("type") == q_type:
+                    picked.append(q)
+                else:
+                    retry.append(q)
+            still = retry
+
+        capped.extend(picked[:limit])
+        remaining = still
+
+    max_total = _requested_question_total(payload)
+    if len(capped) > max_total:
+        capped = capped[:max_total]
+    return capped
 
 
 def _normalize_fib_answers(question: dict) -> None:
@@ -300,18 +408,21 @@ def _synthesize_mtf_text(question: dict) -> None:
     if str(question.get("text") or "").strip():
         return
     mp = question.get("matchPairs")
-    if isinstance(mp, list) and mp and isinstance(mp[0], dict):
-        p0 = mp[0]
-        lt = str(p0.get("leftText") or "").strip()
-        pk = str(p0.get("pairKey") or "").strip()
-        if lt and pk:
-            question["text"] = f"Match: {lt} → {pk}"
-        elif lt or pk:
-            question["text"] = lt or pk
-        else:
-            question["text"] = "Match the pair."
-    else:
-        question["text"] = "Match the pair."
+    if isinstance(mp, list) and mp:
+        snippets: list[str] = []
+        for p in mp[:4]:
+            if not isinstance(p, dict):
+                continue
+            lt = str(p.get("leftText") or "").strip()
+            pk = str(p.get("pairKey") or "").strip()
+            if lt and pk:
+                snippets.append(f"{lt} → {pk}")
+            elif lt or pk:
+                snippets.append(lt or pk)
+        if snippets:
+            question["text"] = "Match the following: " + "; ".join(snippets)
+            return
+    question["text"] = "Match the following."
 
 
 def _normalize_des_for_response(question: dict) -> None:
@@ -347,6 +458,35 @@ def _normalize_difficulty(value: Any, fallback: str) -> str:
     return txt if txt in {"VERY_EASY", "EASY", "MEDIUM", "HARD", "VERY_HARD"} else fallback
 
 
+def _order_questions_for_paper_layout(questions: list[dict], payload: ExamPayload) -> list[dict]:
+    """Group by type block (payload questionTypes order) and renumber displayOrder / questionCode."""
+    type_order: list[str] = []
+    for spec in payload.questionTypes:
+        t = spec.type.value
+        if t not in type_order:
+            type_order.append(t)
+
+    buckets: dict[str, list[dict]] = {t: [] for t in type_order}
+    trailing: list[dict] = []
+    for q in questions:
+        t = str(q.get("type") or "")
+        if t in buckets:
+            buckets[t].append(q)
+        else:
+            trailing.append(q)
+
+    ordered: list[dict] = []
+    for t in type_order:
+        block = sorted(buckets[t], key=lambda x: int(x.get("displayOrder") or 0))
+        ordered.extend(block)
+    ordered.extend(trailing)
+
+    for idx, q in enumerate(ordered, start=1):
+        q["displayOrder"] = idx
+        q["questionCode"] = f"Q{idx}"
+    return ordered
+
+
 def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matches: list[dict]) -> dict:
     repaired = dict(data)
     raw_questions = repaired.get("questions")
@@ -373,14 +513,31 @@ def _repair_generated_exam_data(data: dict, payload: ExamPayload, context_matche
             _normalize_tof_answer(q)
         if q.get("type") == "MTF":
             _normalize_match_pairs(q)
-            _trim_mtf_pairs(q)
+            _ensure_mtf_match_pairs(q)
             _synthesize_mtf_text(q)
         if q.get("type") == "FIB":
             _normalize_fib_answers(q)
         if q.get("type") == "DES":
             _normalize_des_for_response(q)
         normalized_questions.append(q)
-    repaired["questions"] = normalized_questions
+
+    requested_total = _requested_question_total(payload)
+    capped_questions = _cap_questions_to_payload(normalized_questions, payload)
+    if len(normalized_questions) > len(capped_questions):
+        logger.info(
+            "Trimmed exam questions from model: had=%d capped=%d requested=%d",
+            len(normalized_questions),
+            len(capped_questions),
+            requested_total,
+        )
+    if len(capped_questions) < requested_total:
+        logger.warning(
+            "Exam returned fewer questions than requested: got=%d requested=%d",
+            len(capped_questions),
+            requested_total,
+        )
+
+    repaired["questions"] = _order_questions_for_paper_layout(capped_questions, payload)
     repaired.pop("sources", None)
     base = str(payload.description or "").strip()
     summ = str(repaired.get("summary") or repaired.get("examSummary") or "").strip()
@@ -613,11 +770,14 @@ def generate_exam(payload: ExamPayload, openai_client: OpenAI, pinecone_client: 
         len(payload.questionTypes),
     )
     ch_label = " ".join(str(c) for c in chapter_numbers)
-    probe = embed_texts(
-        openai_client,
-        embed_model,
-        [f"{subject_str} {publication_str} chapters {ch_label}"],
-    )[0]
+    try:
+        probe = embed_texts(
+            openai_client,
+            embed_model,
+            [f"{subject_str} {publication_str} chapters {ch_label}"],
+        )[0]
+    except Exception as exc:
+        raise _map_openai_error(exc) from exc
 
     resolved_chapters: list[dict] = []
     missing: list[int] = []
@@ -654,11 +814,14 @@ def generate_exam(payload: ExamPayload, openai_client: OpenAI, pinecone_client: 
     context_matches: list[dict] = []
     seen_ids: set[str] = set()
     for chapter_match in resolved_chapters:
-        chapter_query_vec = embed_texts(
-            openai_client,
-            embed_model,
-            [f"{chapter_match['subject'] or subject_str} {chapter_match['chapter_name']} exam questions"],
-        )[0]
+        try:
+            chapter_query_vec = embed_texts(
+                openai_client,
+                embed_model,
+                [f"{chapter_match['subject'] or subject_str} {chapter_match['chapter_name']} exam questions"],
+            )[0]
+        except Exception as exc:
+            raise _map_openai_error(exc) from exc
         parts_pf: list[dict] = [
             pinecone_class_or_legacy_filter(chapter_match["class"]),
             {"subject": {"$eq": chapter_match["subject"]}},
@@ -708,18 +871,32 @@ def generate_exam(payload: ExamPayload, openai_client: OpenAI, pinecone_client: 
             data["generated_at"] = data.get("generated_at") or datetime.now(timezone.utc).isoformat()
             data["class"] = class_str
             data["subject"] = subject_str
-            data["totalQuestions"] = sum(spec.numberOfQuestions for spec in payload.questionTypes)
+            questions_out = data.get("questions") or []
+            data["totalQuestions"] = len(questions_out)
             data["publication"] = str(payload.publication)
             data["chapters"] = list(payload.chapters)
-            logger.info("Exam generation success attempt=%d questions=%s", attempt + 1, len(data.get("questions", [])))
+            logger.info(
+                "Exam generation success attempt=%d questions=%d requested_max=%d",
+                attempt + 1,
+                len(questions_out),
+                _requested_question_total(payload),
+            )
             return ExamResponse.model_validate(data)
         except (json.JSONDecodeError, ValidationError) as exc:
             logger.warning("Exam JSON/validation error attempt=%d reason=%s", attempt + 1, str(exc))
             if attempt == 1:
-                raise UpstreamError("LLM returned invalid exam format", {"reason": str(exc)}) from exc
+                raise UpstreamError(
+                    "LLM returned invalid exam format",
+                    {"reason": str(exc)},
+                    code="invalid_exam_format",
+                ) from exc
             prompt += "\n\nPrevious output failed schema validation. Return strictly valid JSON."
         except Exception as exc:  # pragma: no cover - network path
-            logger.exception("Exam generation upstream error attempt=%d", attempt + 1)
-            raise UpstreamError("Exam generation failed", {"reason": str(exc)}) from exc
+            mapped = _map_openai_error(exc)
+            if mapped.status_code in (429, 503):
+                logger.warning("Exam generation blocked attempt=%d: %s", attempt + 1, mapped.message)
+            else:
+                logger.exception("Exam generation upstream error attempt=%d", attempt + 1)
+            raise mapped from exc
 
     raise UpstreamError("Exam generation failed unexpectedly")

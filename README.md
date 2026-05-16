@@ -75,7 +75,7 @@ If any requested chapter cannot be resolved in the index, the API returns `409` 
 Notes:
 - Use the same `class`, `subject`, `publication` (or `book_type`) as upload; each entry in **`chapters`** must exist as chunk metadata for that scope.
 - Response `class` / `subject` are digit strings for metadata consistency.
-- **`questionTypes[].numberOfQuestions`**: each row allows **1–50** questions for that type+difficulty combination (total across rows is not capped beyond what the model returns and `totalQuestions` reflects).
+- **`questionTypes[].numberOfQuestions`**: each row allows **1–30**; the **sum across all rows must be ≤ 30** (requests above 30 return `422` validation error). Response `totalQuestions` is the count actually returned (never above 30).
 - Response **`description`**: built as **exam summary** (from the model), then **exam analytics**, then your request **`description`** / teacher line **last** (single string, no separate `summary` / `analysis` keys).
 - `description` is for teacher instructions (e.g., "focus numericals", "avoid tricky language", "add real-life examples").
 
@@ -158,4 +158,5 @@ Important:
 ## 7) Notes
 
 - **`GET /books`** returns both the **`books`** list and **`classes` / `subjects` / `publications`** for the same filtered view. Use **`count`** as the number of books (no separate `options` flag).
+- **CORS**: browser calls are allowed only from VidhyaNetra origins by default (`https://www.vidyanetra.in`, `https://vidyanetra.in`). Override with env `CORS_ORIGINS` (comma-separated). CORS does not block server-to-server or `curl` without an `Origin` header.
 

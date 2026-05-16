@@ -1,12 +1,16 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Self, Union
 
 from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.common import Difficulty, QuestionType
 
-# MTF: exactly one left–right pair per question (API contract).
-MTF_MAX_MATCH_PAIRS = 1
+# Exam generation limits
+EXAM_MAX_TOTAL_QUESTIONS = 30
+
+# MTF: each question must include at least two left–right pairs to match.
+MTF_MIN_MATCH_PAIRS = 2
+MTF_MAX_MATCH_PAIRS = 12
 
 
 def _int_like(v: Any) -> int:
@@ -30,7 +34,11 @@ IntLike = Annotated[int, BeforeValidator(_int_like)]
 
 
 class QuestionTypeSpec(BaseModel):
-    numberOfQuestions: int = Field(ge=1, le=50)
+    numberOfQuestions: int = Field(
+        ge=1,
+        le=EXAM_MAX_TOTAL_QUESTIONS,
+        description=f"Count for this type+difficulty row (1–{EXAM_MAX_TOTAL_QUESTIONS}).",
+    )
     type: QuestionType
     difficultyLevel: Difficulty
 
@@ -77,6 +85,16 @@ class ExamPayload(BaseModel):
     @classmethod
     def _unique_sorted_chapters(cls, v: list[int]) -> list[int]:
         return sorted(set(v))
+
+    @model_validator(mode="after")
+    def _validate_total_question_count(self) -> Self:
+        total = sum(spec.numberOfQuestions for spec in self.questionTypes)
+        if total > EXAM_MAX_TOTAL_QUESTIONS:
+            raise ValueError(
+                f"Total numberOfQuestions across questionTypes is {total}; "
+                f"maximum allowed is {EXAM_MAX_TOTAL_QUESTIONS}."
+            )
+        return self
 
 
 class SourceCitation(BaseModel):
@@ -142,7 +160,10 @@ class MTFQuestion(BaseModel):
     difficulty: Difficulty
     text: str
     displayOrder: int
-    matchPairs: list[MatchPair] = Field(min_length=1, max_length=MTF_MAX_MATCH_PAIRS)
+    matchPairs: list[MatchPair] = Field(
+        min_length=MTF_MIN_MATCH_PAIRS,
+        max_length=MTF_MAX_MATCH_PAIRS,
+    )
 
 
 class DESQuestion(BaseModel):
